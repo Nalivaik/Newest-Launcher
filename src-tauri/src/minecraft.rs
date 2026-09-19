@@ -582,6 +582,7 @@ impl MinecraftService {
     }
 
     fn spawn_game(&self, core: Arc<LauncherCore>, mut command: Command, instance_id: String, game_directory: String) -> Result<GameStatus, String> {
+        configure_game_process(&mut command);
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
         let mut child = command.spawn().map_err(|error| format!("Не удалось запустить Java: {error}"))?;
         let pid = child.id();
@@ -609,14 +610,16 @@ impl MinecraftService {
             let elapsed = started.elapsed().as_secs();
             let _ = core.record_game_exit(&instance_id, elapsed);
             let code = exit.code();
+            let failed = !exit.success();
+            let error = failed.then(|| format!("Minecraft завершился с ошибкой (код {:?}). Подробности: {}", code, log_path.display()));
             let _ = append_game_log(&log_path, &format!("[Newest Launcher] Minecraft exited with code {:?} after {}s", code, elapsed));
             if let Ok(mut current) = runtime.lock() {
                 if current.active.as_ref().is_some_and(|active| active.instance_id == instance_id) {
                     current.active = None;
                     current.status = GameStatus {
-                        instance_id: Some(instance_id), phase: "idle".into(),
-                        message: format!("Minecraft завершился (код {:?})", code), completed_files: 0, total_files: 0,
-                        completed_bytes: 0, total_bytes: 0, pid: None, last_error: None,
+                        instance_id: Some(instance_id), phase: if failed { "failed".into() } else { "idle".into() },
+                        message: if failed { "Minecraft завершился с ошибкой".into() } else { format!("Minecraft завершился (код {:?})", code) },
+                        completed_files: 0, total_files: 0, completed_bytes: 0, total_bytes: 0, pid: None, last_error: error,
                     };
                 }
             }
@@ -1005,7 +1008,10 @@ fn build_command(plan: &PreparedVersion, profile: &Profile, java: PathBuf) -> Re
     values.insert("library_directory", plan.library_directory.to_string_lossy().into_owned());
     values.insert("resolution_width", plan.instance.resolution.width.to_string());
     values.insert("resolution_height", plan.instance.resolution.height.to_string());
-    let mut command = Command::new(java);
+    // javaw.exe intentionally has no console on Windows. Use its java.exe sibling instead
+    // so that the launcher can reliably capture a JVM startup failure, then suppress the
+    // console window with CREATE_NO_WINDOW in `configure_game_process`.
+    let mut command = Command::new(console_java(&java));
     let mut jvm = argument_group(plan.version.arguments.get("jvm"), &values);
     if jvm.is_empty() {
         jvm = vec![format!("-Djava.library.path={}", values["natives_directory"]), "-cp".into(), values["classpath"].clone()];
@@ -1116,6 +1122,26 @@ fn find_java(instance: &Instance, root: &Path, required: u32) -> Option<PathBuf>
 }
 
 fn java_binary() -> &'static str { if cfg!(windows) { "javaw.exe" } else { "java" } }
+
+fn console_java(java: &Path) -> PathBuf {
+    if cfg!(windows) && java.file_name().is_some_and(|name| name.eq_ignore_ascii_case("javaw.exe")) {
+        let console = java.with_file_name("java.exe");
+        if console.is_file() { return console; }
+    }
+    java.to_owned()
+}
+
+fn configure_game_process(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW keeps java.exe from flashing a console while retaining piped
+        // stdout/stderr. javaw.exe cannot provide the same reliable diagnostic channel.
+        command.creation_flags(0x0800_0000);
+    }
+    #[cfg(not(windows))]
+    let _ = command;
+}
 
 fn java_major_version(path: &Path) -> Option<u32> {
     // javaw deliberately has no console on Windows, so probe its java.exe
