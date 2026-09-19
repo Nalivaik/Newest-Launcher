@@ -60,6 +60,13 @@ export interface Profile {
   createdAt: string;
   lastUsed: string | null;
 }
+
+export interface MicrosoftLoginChallenge {
+  id: string;
+  userCode: string;
+  verificationUri: string;
+  expiresIn: number;
+}
 export interface StorageUsage {
   instancesBytes: number; cacheBytes: number; trashBytes: number; freeBytes: number; totalBytes: number;
 }

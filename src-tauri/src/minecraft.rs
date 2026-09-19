@@ -5,6 +5,7 @@
 //! argument list, or authentication token.
 
 use crate::loaders::{self, InstallerRequest};
+use crate::microsoft_auth::{MicrosoftAuth, MICROSOFT_CLIENT_ID};
 use crate::platform::{command_path, command_path_string};
 use newest_launcher_core::{Instance, LauncherCore, Profile, Snapshot};
 use flate2::read::GzDecoder;
@@ -117,14 +118,17 @@ impl MinecraftService {
         }
     }
 
-    pub async fn launch(&self, core: Arc<LauncherCore>, instance_id: String) -> Result<GameStatus, String> {
+    pub async fn launch(&self, core: Arc<LauncherCore>, auth: &MicrosoftAuth, instance_id: String) -> Result<GameStatus, String> {
         self.begin(&instance_id, "installing", "Проверяем файлы Minecraft")?;
         let outcome = async {
             let profile = core.active_profile().map_err(core_error)?
                 .ok_or_else(|| "Создайте или выберите Local / Offline профиль перед запуском".to_owned())?;
-            if profile.kind != "offline" {
-                return Err("Microsoft-профиль нельзя запускать до завершения безопасной авторизации и проверки владения Minecraft".into());
-            }
+            let (access_token, user_type) = if profile.kind == "offline" {
+                ("0".to_owned(), "legacy".to_owned())
+            } else {
+                let session = auth.session_for_profile(&profile).await?;
+                (session.access_token, "msa".to_owned())
+            };
             let loader = core.instance(&instance_id).map_err(core_error)?.loader;
             let plan = if is_official_loader(&loader) {
                 let prepared = self.prepare_official_loader(&core, &instance_id).await?;
@@ -140,7 +144,7 @@ impl MinecraftService {
             self.set_phase("launching", "Подбираем совместимую Java");
             let required_java = plan.version.java_version.as_ref().map(|value| value.major_version).unwrap_or(8);
             let java = self.resolve_or_download_java(&plan.instance, &core.data_directory(), required_java).await?;
-            let command = build_command(&plan, &profile, java)?;
+            let command = build_command(&plan, &profile, java, &access_token, &user_type)?;
             self.spawn_game(core.clone(), command, plan.instance.id.clone(), plan.instance.game_directory.clone())
         }.await;
         match outcome {
@@ -1001,7 +1005,7 @@ fn library_path(cache: &Path, download: &Download) -> Result<PathBuf, String> {
     safe_relative(relative).map(|relative| cache.join("libraries").join(relative))
 }
 
-fn build_command(plan: &PreparedVersion, profile: &Profile, java: PathBuf) -> Result<Command, String> {
+fn build_command(plan: &PreparedVersion, profile: &Profile, java: PathBuf, access_token: &str, user_type: &str) -> Result<Command, String> {
     let separator = if cfg!(windows) { ";" } else { ":" };
     let mut classpath = plan.classpath.clone();
     classpath.push(plan.client_path.clone());
@@ -1017,10 +1021,10 @@ fn build_command(plan: &PreparedVersion, profile: &Profile, java: PathBuf) -> Re
     values.insert("assets_root", command_path_string(assets));
     values.insert("assets_index_name", asset_index_name.clone());
     values.insert("auth_uuid", profile.uuid.clone());
-    values.insert("auth_access_token", "0".into());
-    values.insert("clientid", "".into());
+    values.insert("auth_access_token", access_token.into());
+    values.insert("clientid", if profile.kind == "microsoft" { MICROSOFT_CLIENT_ID.into() } else { "".into() });
     values.insert("auth_xuid", "".into());
-    values.insert("user_type", "legacy".into());
+    values.insert("user_type", user_type.into());
     values.insert("version_type", if plan.version.r#type.is_empty() { "release".into() } else { plan.version.r#type.clone() });
     values.insert("natives_directory", command_path_string(&plan.native_directory));
     values.insert("launcher_name", "Newest Launcher".into());

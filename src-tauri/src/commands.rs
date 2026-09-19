@@ -1,4 +1,4 @@
-use crate::{minecraft::{GameStatus, MinecraftService}, modrinth::ModrinthInstaller};
+use crate::{microsoft_auth::{MicrosoftAuth, MicrosoftLoginChallenge}, minecraft::{GameStatus, MinecraftService}, modrinth::ModrinthInstaller};
 use newest_launcher_core::{InstanceInput, LauncherCore, LogEntry, Settings, Snapshot, StorageUsage};
 use std::sync::Arc;
 use tauri::{AppHandle, State};
@@ -67,13 +67,27 @@ pub async fn delete_offline_profile(core: CoreState<'_>, id: String) -> Result<S
 }
 
 #[tauri::command]
+pub async fn start_microsoft_sign_in(app: AppHandle, auth: State<'_, MicrosoftAuth>) -> Result<MicrosoftLoginChallenge, String> {
+    auth.begin_sign_in(&app).await
+}
+
+#[tauri::command]
+pub async fn finish_microsoft_sign_in(
+    core: CoreState<'_>, auth: State<'_, MicrosoftAuth>, challenge_id: String,
+) -> Result<Snapshot, String> {
+    auth.finish_sign_in(core.inner(), &challenge_id).await
+}
+
+#[tauri::command]
 pub async fn install_minecraft(core: CoreState<'_>, minecraft: State<'_, MinecraftService>, id: String) -> Result<Snapshot, String> {
     minecraft.install(core.inner(), id).await
 }
 
 #[tauri::command]
-pub async fn launch_minecraft(core: CoreState<'_>, minecraft: State<'_, MinecraftService>, id: String) -> Result<GameStatus, String> {
-    minecraft.launch(core.inner().clone(), id).await
+pub async fn launch_minecraft(
+    core: CoreState<'_>, minecraft: State<'_, MinecraftService>, auth: State<'_, MicrosoftAuth>, id: String,
+) -> Result<GameStatus, String> {
+    minecraft.launch(core.inner().clone(), auth.inner(), id).await
 }
 
 #[tauri::command]

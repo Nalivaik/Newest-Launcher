@@ -1,4 +1,4 @@
-# Microsoft authentication configuration
+# Microsoft authentication
 
 `Newest Launcher` does not use shared or copied Client IDs and never asks for a
 Microsoft password inside the application. A real Minecraft Java sign-in needs
@@ -20,15 +20,20 @@ Microsoft Entra:
    clients.
 5. Provide that Client ID to the launcher configuration used for the release.
 
-The planned authentication chain is deliberately strict:
+The implemented authentication chain is deliberately strict:
 
 `Microsoft OAuth → Xbox Live → XSTS → Minecraft services → entitlements → Minecraft profile`
 
 Only after the entitlement response confirms Minecraft Java ownership may the
 launcher create a `microsoft` profile. The profile then contains the Minecraft
-name, UUID and official skin URL. OAuth, Xbox and Minecraft tokens must stay in
-OS secure storage and never in `state.json`, browser storage, logs or crash
-reports.
+name, UUID and official skin URL. OAuth, Xbox and Minecraft tokens are stored
+only in the OS credential store (Windows Credential Manager on Windows), never
+in `state.json`, browser storage, logs or crash reports.
+
+The current registration is personal-account-only, so the launcher uses the
+official Microsoft `consumers` device-code endpoint. It opens the system browser
+and shows the one-time code inside the account dialog. This is a public-client
+flow: no client secret is embedded in the application.
 
 A **Local / Offline profile** is a different saved entity: its nickname is
 entered by the player, its UUID is local, it has no skin/token/entitlement, and

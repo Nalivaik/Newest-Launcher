@@ -70,6 +70,40 @@ export function accountDialog(): void {
 
   const microsoft = el('section', 'account-section microsoft-pending');
   microsoft.append(el('h3', '', 'Microsoft'), el('p', 'dialog-note', t('microsoftSetup')));
+  const signIn = el('button', 'primary-action', t('microsoftSignIn')); signIn.type = 'button';
+  signIn.disabled = !bridge.isDesktop;
+  const challengeArea = el('div', 'microsoft-login-challenge');
+  signIn.addEventListener('click', () => {
+    if (signIn.disabled) return;
+    signIn.disabled = true;
+    void (async () => {
+      try {
+        const challenge = await bridge.startMicrosoftSignIn();
+        challengeArea.replaceChildren(
+          el('p', 'dialog-note', t('microsoftCodeHint')),
+          el('code', 'microsoft-login-code', challenge.userCode),
+        );
+        const complete = el('button', 'soft-button', t('microsoftComplete')); complete.type = 'button';
+        complete.addEventListener('click', () => {
+          complete.disabled = true;
+          void (async () => {
+            try {
+              store.set(await bridge.finishMicrosoftSignIn(challenge.id));
+              notify(t('microsoftConnected'));
+              modal.close();
+            } catch (error) {
+              reportError(error);
+              complete.disabled = false;
+              signIn.disabled = false;
+              challengeArea.replaceChildren();
+            }
+          })();
+        });
+        challengeArea.append(complete);
+      } catch (error) { reportError(error); signIn.disabled = false; }
+    })();
+  });
+  microsoft.append(signIn, challengeArea);
   body.append(microsoft);
   const modal = showDialog(t('accountTitle'), body);
   username.focus();

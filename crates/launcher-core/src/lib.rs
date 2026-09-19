@@ -282,6 +282,34 @@ impl LauncherCore {
         Ok(state.clone())
     }
 
+    /// Registers a Microsoft account only after the desktop authentication layer has checked
+    /// the Minecraft entitlement and profile. OAuth tokens never enter this persistent store.
+    pub fn upsert_microsoft_profile(&self, username: String, uuid: String, skin_url: Option<String>) -> Result<Snapshot> {
+        models::validate_username(&username)?;
+        models::validate_id(&uuid)?;
+        if skin_url.as_ref().is_some_and(|url| !url.starts_with("https://")) {
+            return Err(CoreError::Invalid("invalid Microsoft skin URL"));
+        }
+        let mut state = self.state.lock().map_err(|_| CoreError::Poisoned)?;
+        let mut next = state.clone();
+        let profile_id = if let Some(existing) = next.profiles.iter_mut().find(|profile| profile.kind == "microsoft" && profile.uuid == uuid) {
+            existing.username = username;
+            existing.skin_url = skin_url;
+            existing.last_used = Some(models::now());
+            existing.id.clone()
+        } else {
+            let profile = Profile::new_microsoft(username, uuid, skin_url);
+            let id = profile.id.clone();
+            next.profiles.push(profile);
+            id
+        };
+        next.active_profile_id = Some(profile_id);
+        store::save(&self.root, &next)?;
+        *state = next;
+        self.log("info", "profile.microsoft_verified", "Microsoft Minecraft profile verified");
+        Ok(state.clone())
+    }
+
     pub fn select_profile(&self, id: &str) -> Result<Snapshot> {
         let mut state = self.state.lock().map_err(|_| CoreError::Poisoned)?;
         if !state.profiles.iter().any(|profile| profile.id == id) { return Err(CoreError::NotFound); }
@@ -489,6 +517,24 @@ mod tests {
         let reopened = LauncherCore::open(directory.path().join("data")).unwrap();
         assert_eq!(reopened.snapshot().unwrap().active_profile_id.as_deref(), Some(id.as_str()));
         assert!(reopened.create_offline_profile("Builder_42".into()).is_err());
+    }
+
+    #[test]
+    fn verified_microsoft_profile_is_persistent_without_tokens_in_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("data");
+        let core = LauncherCore::open(data.clone()).unwrap();
+        let snapshot = core.upsert_microsoft_profile(
+            "Steve_42".into(), "069a79f4-44e9-4726-a5be-fca90e38aaf5".into(),
+            Some("https://textures.minecraft.net/texture/example".into()),
+        ).unwrap();
+        let profile = snapshot.profiles.iter().find(|profile| profile.kind == "microsoft").unwrap();
+        assert_eq!(profile.username, "Steve_42");
+        assert_eq!(profile.uuid, "069a79f4-44e9-4726-a5be-fca90e38aaf5");
+        assert_eq!(snapshot.active_profile_id.as_deref(), Some(profile.id.as_str()));
+        assert!(!fs::read_to_string(data.join("state.json")).unwrap().contains("access_token"));
+        drop(core);
+        assert_eq!(LauncherCore::open(data).unwrap().snapshot().unwrap().profiles.len(), 1);
     }
 
     #[test]

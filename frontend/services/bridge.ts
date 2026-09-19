@@ -1,5 +1,5 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
-import type { GameStatus, InstanceInput, ProjectType, Settings, Snapshot, StorageUsage, LogEntry } from '../types';
+import type { GameStatus, InstanceInput, MicrosoftLoginChallenge, ProjectType, Settings, Snapshot, StorageUsage, LogEntry } from '../types';
 import { emptySnapshot } from '../state/store';
 
 async function command<T>(name: string, args?: Record<string, unknown>): Promise<T> {
@@ -20,6 +20,8 @@ export const bridge = {
   createOfflineProfile: (username: string): Promise<Snapshot> => command('create_offline_profile', { username }),
   selectProfile: (id: string): Promise<Snapshot> => command('select_profile', { id }),
   deleteOfflineProfile: (id: string): Promise<Snapshot> => command('delete_offline_profile', { id }),
+  startMicrosoftSignIn: (): Promise<MicrosoftLoginChallenge> => command('start_microsoft_sign_in'),
+  finishMicrosoftSignIn: (challengeId: string): Promise<Snapshot> => command('finish_microsoft_sign_in', { challengeId }),
   installMinecraft: (id: string): Promise<Snapshot> => command('install_minecraft', { id }),
   installModrinthContent: (id: string, projectId: string, contentType: Extract<ProjectType, 'mod' | 'resourcepack' | 'shader'>): Promise<Snapshot> =>
     command('install_modrinth_content', { id, projectId, contentType }),

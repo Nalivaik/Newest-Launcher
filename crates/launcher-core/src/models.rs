@@ -219,6 +219,14 @@ impl Profile {
         }
     }
 
+    pub(crate) fn new_microsoft(username: String, uuid: String, skin_url: Option<String>) -> Self {
+        let now = now();
+        Self {
+            id: uuid::Uuid::new_v4().to_string(), kind: "microsoft".into(), username, uuid, skin_url,
+            created_at: now.clone(), last_used: Some(now),
+        }
+    }
+
     pub(crate) fn validate(&self) -> Result<()> {
         validate_id(&self.id)?;
         if !["offline", "microsoft"].contains(&self.kind.as_str()) { return Err(CoreError::Invalid("unknown profile kind")); }

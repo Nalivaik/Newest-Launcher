@@ -2,6 +2,7 @@
 
 mod commands;
 mod loaders;
+mod microsoft_auth;
 mod minecraft;
 mod metadata;
 mod modrinth;
@@ -20,6 +21,7 @@ fn main() {
             app.manage(Arc::new(LauncherCore::open(root)?));
             app.manage(metadata::MetadataClient::new()?);
             app.manage(modrinth::ModrinthInstaller::new()?);
+            app.manage(microsoft_auth::MicrosoftAuth::new()?);
             app.manage(minecraft::MinecraftService::new()?);
             Ok(())
         })
@@ -28,6 +30,7 @@ fn main() {
             commands::clone_instance, commands::delete_instance, commands::restore_instance,
             commands::select_instance, commands::save_settings, commands::open_folder,
             commands::create_offline_profile, commands::select_profile, commands::delete_offline_profile,
+            commands::start_microsoft_sign_in, commands::finish_microsoft_sign_in,
             commands::storage_usage, commands::read_logs, commands::export_instance,
             commands::import_instance, commands::open_external, metadata::modrinth_metadata,
             commands::install_minecraft, commands::launch_minecraft, commands::stop_minecraft,
