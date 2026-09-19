@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#091a27" />
+    <title>Newest Launcher</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <template id="home-template">
+      <section class="hero panel">
+        <div class="hero-copy"><p class="eyebrow">NEWEST LAUNCHER</p><h1 data-text="heroTitle">Твой мир.<br>Твои правила.</h1><p data-text="heroDescription">Собери своё пространство для приключений.</p><div class="hero-badges"><span>Без рекламы</span><span>Изолированные instances</span></div></div>
+        <div class="hero-art" aria-hidden="true"><div class="hero-glow"></div><div class="cube big-cube"></div><div class="pixel-cloud cloud-one"></div><div class="pixel-cloud cloud-two"></div></div>
+      </section>
+      <section class="home-instance panel" aria-labelledby="instanceState">
+        <div class="instance-overview"><div class="cube tiny-cube"></div><div><p class="eyebrow" id="instanceState">NEWEST LAUNCHER</p><h2 id="playVersion"></h2><p id="instanceSummary"></p></div></div>
+        <div class="instance-quick-actions" aria-label="Быстрые действия"></div>
+        <div class="play-controls"><button class="play" id="playButton" type="button" aria-disabled="true"><span data-icon="play"></span><span data-text="play">Играть</span></button><button class="icon-button" id="playOptions" type="button" aria-label="Настройки установки"><span data-icon="settings"></span></button></div>
+        <p class="launch-note" id="launchNote" data-text="launchPending">Установка и запуск Minecraft будут подключены на следующем этапе.</p>
+      </section>
+      <section class="quick-grid" aria-label="Быстрые действия">
+        <button class="quick" type="button" id="versionButton"><span class="quick-icon" data-icon="instances"></span><span><small>АКТИВНЫЙ INSTANCE</small><strong id="versionText"></strong></span><span class="quick-arrow" data-icon="arrow"></span></button>
+        <button class="quick" type="button" data-route="mods"><span class="quick-icon violet" data-icon="mods"></span><span><small>КОНТЕНТ</small><strong data-text="mods">Моды</strong></span><span class="quick-arrow" data-icon="arrow"></span></button>
+        <button class="quick" type="button" data-route="shaders"><span class="quick-icon amber" data-icon="shaders"></span><span><small>ГРАФИКА</small><strong data-text="shaders">Шейдеры</strong></span><span class="quick-arrow" data-icon="arrow"></span></button>
+      </section>
+      <section class="home-grid">
+        <article class="panel home-library-panel"><div class="panel-head"><div><p class="eyebrow">ЛОКАЛЬНЫЕ ДАННЫЕ</p><h2 data-text="yourLibrary">Твоя библиотека</h2></div><button class="link-button" data-route="instances" type="button">Открыть <span data-icon="arrow"></span></button></div><div id="homeLibrary" class="collection-list"></div></article>
+        <article class="panel news-panel"><div class="panel-head"><div><p class="eyebrow">НОВОСТИ</p><h2 data-text="news">Новости</h2></div><button class="link-button" id="officialNews" type="button"><span data-text="officialNews">Новости Minecraft</span><span data-icon="arrow"></span></button></div><div class="news-empty"><span data-icon="bell"></span><p id="newsState" data-text="newsEmpty">Новостной источник пока не подключён.</p></div></article>
+      </section>
+    </template>
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script type="module" src="/frontend/main.ts"></script>
+  </body>
+</html>

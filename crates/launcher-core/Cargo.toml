@@ -1,0 +1,18 @@
+[package]
+name = "newest-launcher-core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+fs2 = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+thiserror = "2"
+uuid = { version = "1", features = ["v4"] }
+zip = { version = "2.4", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+tempfile = "3"
