@@ -5,6 +5,7 @@
 //! runtime prepares an isolated target directory; this module downloads, runs, and verifies
 //! the official installer result inside that directory.
 
+use crate::platform::{command_path, command_path_string};
 use reqwest::Client;
 use serde_json::Value;
 use sha1::{Digest, Sha1};
@@ -39,6 +40,7 @@ pub(crate) struct InstalledLoader {
     pub loader: &'static str,
     pub loader_version: String,
     pub version_id: String,
+    pub verified: VerifiedLoader,
 }
 
 #[derive(Debug, Clone)]
@@ -161,7 +163,7 @@ async fn install_official<I: ModLoaderInstaller>(installer: &I, request: &Instal
     download_installer(request.client, &url, &archive).await?;
 
     (request.progress)("Запуск installer");
-    append_install_log(request.log_path, &format!("java={} target={}", request.java.display(), request.minecraft_root.display()))?;
+    append_install_log(request.log_path, &format!("java={} target={}", command_path_string(request.java), command_path_string(request.minecraft_root)))?;
     let output = run_installer(request.java, &archive, flag, request.minecraft_root).await?;
     append_install_log(request.log_path, &format!("exit_code={}", output.exit_code))?;
     append_install_output(request.log_path, "stdout", &output.stdout)?;
@@ -174,8 +176,8 @@ async fn install_official<I: ModLoaderInstaller>(installer: &I, request: &Instal
     (request.progress)("Проверка результата");
     let verified = installer.verify(request.minecraft_root, request.minecraft_version, &selected.artifact_version).await?;
     Ok(InstalledLoader {
-        loader: installer.loader(), loader_version: verified.loader_version,
-        version_id: verified.version_id,
+        loader: installer.loader(), loader_version: verified.loader_version.clone(),
+        version_id: verified.version_id.clone(), verified,
     })
 }
 
@@ -306,10 +308,13 @@ async fn run_installer(java: &Path, installer: &Path, flag: &str, target: &Path)
     ensure_directory(target)?;
     let home = target.join(".newest-installer-home");
     ensure_directory(&home)?;
-    let java = console_java(java);
+    let java = command_path(&console_java(java));
+    let installer = command_path(installer);
+    let target = command_path(target);
+    let home = command_path(&home);
     let mut command = Command::new(&java);
-    command.arg(format!("-Duser.home={}", home.display())).arg("-jar").arg(installer).arg(flag).arg(target)
-        .current_dir(target).env("HOME", &home).env("USERPROFILE", &home).env("APPDATA", &home)
+    command.arg(format!("-Duser.home={}", command_path_string(&home))).arg("-jar").arg(installer).arg(flag).arg(&target)
+        .current_dir(&target).env("HOME", command_path_string(&home)).env("USERPROFILE", command_path_string(&home)).env("APPDATA", command_path_string(&home))
         .stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = command.spawn().map_err(|error| format!("Не удалось запустить официальный installer: {error}"))?;
     let stdout = child.stdout.take().ok_or_else(|| "Installer не предоставил stdout".to_owned())?;

@@ -5,6 +5,7 @@ mod loaders;
 mod minecraft;
 mod metadata;
 mod modrinth;
+mod platform;
 
 use newest_launcher_core::LauncherCore;
 use std::sync::Arc;

@@ -5,6 +5,7 @@
 //! argument list, or authentication token.
 
 use crate::loaders::{self, InstallerRequest};
+use crate::platform::{command_path, command_path_string};
 use newest_launcher_core::{Instance, LauncherCore, Profile, Snapshot};
 use flate2::read::GzDecoder;
 use reqwest::redirect::Policy;
@@ -454,12 +455,14 @@ impl MinecraftService {
             };
             let installed = loaders::install(&request, &base.instance.loader).await?;
             if installed.loader != base.instance.loader { return Err("Installer вернул несовпадающий loader".into()); }
+            // Keep these fields before moving the verified result out of `installed`.
+            let installed_version_id = installed.version_id.clone();
+            let installed_loader_version = installed.loader_version.clone();
             commit_isolated_runtime(&runtime, &stage_runtime, &root.join(".staging"))?;
-            let artifact = official_artifact_version(&base.instance.loader, &base.instance.minecraft_version, &installed.loader_version);
-            let verified = loaders::verify(&base.instance.loader, &runtime, &base.instance.minecraft_version, &artifact).await?;
-            if verified.version_id != installed.version_id { return Err("Version JSON после переноса installer runtime не совпадает с проверенным результатом".into()); }
+            let verified = rebase_verified_loader(installed.verified, &stage_runtime, &runtime)?;
+            if verified.version_id != installed_version_id { return Err("Version JSON после переноса installer runtime не совпадает с проверенным результатом".into()); }
             let plan = prepare_official_launch_plan(base, &runtime, verified).await?;
-            Ok::<OfficialPrepared, String>(OfficialPrepared { plan, loader_version: installed.loader_version, newly_installed: true })
+            Ok::<OfficialPrepared, String>(OfficialPrepared { plan, loader_version: installed_loader_version, newly_installed: true })
         }.await;
         let _ = fs::remove_dir_all(&stage_parent);
         installation
@@ -887,6 +890,22 @@ fn commit_isolated_runtime(target: &Path, staged: &Path, staging_root: &Path) ->
     Ok(())
 }
 
+/// The official installer output is fully checked in staging before this directory is atomically
+/// renamed into the instance. Rebase the already-verified paths instead of scanning every Forge
+/// library a second time — on Windows, antivirus hooks make that duplicate scan very expensive.
+fn rebase_verified_loader(mut verified: loaders::VerifiedLoader, staged: &Path, target: &Path) -> Result<loaders::VerifiedLoader, String> {
+    verified.version_json = rebase_runtime_path(&verified.version_json, staged, target)?;
+    verified.library_paths = verified.library_paths.into_iter()
+        .map(|path| rebase_runtime_path(&path, staged, target)).collect::<Result<Vec<_>, _>>()?;
+    Ok(verified)
+}
+
+fn rebase_runtime_path(path: &Path, staged: &Path, target: &Path) -> Result<PathBuf, String> {
+    let relative = path.strip_prefix(staged).map_err(|_| "Installer вернул путь вне staging runtime".to_owned())?;
+    let relative = safe_relative(&relative.to_string_lossy())?;
+    Ok(target.join(relative))
+}
+
 async fn prepare_official_launch_plan(mut base: PreparedVersion, runtime: &Path, verified: loaders::VerifiedLoader) -> Result<PreparedVersion, String> {
     let loader_json: OfficialLoaderVersionJson = read_json(&verified.version_json).await?;
     if loader_json.id != verified.version_id || loader_json.inherits_from != base.instance.minecraft_version || loader_json.main_class.is_empty() {
@@ -909,9 +928,11 @@ async fn prepare_official_launch_plan(mut base: PreparedVersion, runtime: &Path,
         if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() == 0 { return Err("Isolated runtime не содержит Vanilla library".into()); }
         if seen.insert(target.clone()) { classpath.push(target); }
     }
+    // `loaders::install` verified every loader library while this runtime was still in the
+    // private staging directory. `commit_isolated_runtime` only atomically renames that
+    // verified directory, so scanning hundreds of Forge files again here adds no safety and
+    // is disproportionately slow on Windows systems with real-time antivirus scanning.
     for library in verified.library_paths {
-        let metadata = fs::symlink_metadata(&library).map_err(io_error)?;
-        if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() == 0 { return Err("Installer создал небезопасную library".into()); }
         if seen.insert(library.clone()) { classpath.push(library); }
     }
     base.version.id = loader_json.id;
@@ -984,15 +1005,16 @@ fn build_command(plan: &PreparedVersion, profile: &Profile, java: PathBuf) -> Re
     let separator = if cfg!(windows) { ";" } else { ":" };
     let mut classpath = plan.classpath.clone();
     classpath.push(plan.client_path.clone());
-    let classpath = std::env::join_paths(classpath.iter()).map_err(|_| "Не удалось собрать classpath Minecraft")?
+    let classpath_paths = classpath.iter().map(|path| command_path(path)).collect::<Vec<_>>();
+    let classpath = std::env::join_paths(classpath_paths.iter()).map_err(|_| "Не удалось собрать classpath Minecraft")?
         .to_string_lossy().into_owned();
     let assets = &plan.assets_root;
     let asset_index_name = &plan.version.asset_index.id;
     let mut values = HashMap::new();
     values.insert("auth_player_name", profile.username.clone());
     values.insert("version_name", plan.version.id.clone());
-    values.insert("game_directory", plan.instance.game_directory.clone());
-    values.insert("assets_root", assets.to_string_lossy().into_owned());
+    values.insert("game_directory", command_path_string(Path::new(&plan.instance.game_directory)));
+    values.insert("assets_root", command_path_string(assets));
     values.insert("assets_index_name", asset_index_name.clone());
     values.insert("auth_uuid", profile.uuid.clone());
     values.insert("auth_access_token", "0".into());
@@ -1000,24 +1022,24 @@ fn build_command(plan: &PreparedVersion, profile: &Profile, java: PathBuf) -> Re
     values.insert("auth_xuid", "".into());
     values.insert("user_type", "legacy".into());
     values.insert("version_type", if plan.version.r#type.is_empty() { "release".into() } else { plan.version.r#type.clone() });
-    values.insert("natives_directory", plan.native_directory.to_string_lossy().into_owned());
+    values.insert("natives_directory", command_path_string(&plan.native_directory));
     values.insert("launcher_name", "Newest Launcher".into());
     values.insert("launcher_version", env!("CARGO_PKG_VERSION").into());
     values.insert("classpath", classpath);
     values.insert("classpath_separator", separator.into());
-    values.insert("library_directory", plan.library_directory.to_string_lossy().into_owned());
+    values.insert("library_directory", command_path_string(&plan.library_directory));
     values.insert("resolution_width", plan.instance.resolution.width.to_string());
     values.insert("resolution_height", plan.instance.resolution.height.to_string());
     // javaw.exe intentionally has no console on Windows. Use its java.exe sibling instead
     // so that the launcher can reliably capture a JVM startup failure, then suppress the
     // console window with CREATE_NO_WINDOW in `configure_game_process`.
-    let mut command = Command::new(console_java(&java));
+    let mut command = Command::new(command_path(&console_java(&java)));
     let mut jvm = argument_group(plan.version.arguments.get("jvm"), &values);
     if jvm.is_empty() {
         jvm = vec![format!("-Djava.library.path={}", values["natives_directory"]), "-cp".into(), values["classpath"].clone()];
     }
     if let (Some(argument), Some(path)) = (&plan.logging_argument, &plan.logging_path) {
-        jvm.push(argument.replace("${path}", &path.to_string_lossy()));
+        jvm.push(argument.replace("${path}", &command_path_string(path)));
     }
     command.args(jvm);
     command.arg(format!("-Xmx{}M", plan.instance.ram_mb));
@@ -1030,7 +1052,7 @@ fn build_command(plan: &PreparedVersion, profile: &Profile, java: PathBuf) -> Re
         }
     }
     if game.is_empty() { return Err("Version JSON не содержит игровые аргументы".into()); }
-    command.args(game).current_dir(&plan.instance.game_directory);
+    command.args(game).current_dir(command_path(Path::new(&plan.instance.game_directory)));
     Ok(command)
 }
 
@@ -1528,7 +1550,9 @@ mod tests {
     #[tokio::test]
     #[ignore = "downloads and runs the official Forge installer"]
     async fn official_forge_pipeline_builds_a_launch_plan() {
-        exercise_official_loader("forge", "1.20.1", "47.4.10").await.unwrap();
+        // Keep this regression test aligned with the current Forge installer generation.
+        // It specifically covers the artifact reported by the Windows startup failure.
+        exercise_official_loader("forge", "1.21.11", "61.2.1").await.unwrap();
     }
 
     #[tokio::test]
