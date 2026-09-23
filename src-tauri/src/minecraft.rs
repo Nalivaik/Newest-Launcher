@@ -268,7 +268,14 @@ impl MinecraftService {
         self.download_verified(&version.asset_index.url, &asset_index_path, &version.asset_index.sha1, Some(version.asset_index.size), false).await?;
         let asset_index: AssetIndex = read_json(&asset_index_path).await?;
         if asset_index.objects.len() > MAX_ASSETS { return Err("Asset index содержит слишком много файлов".into()); }
-        let libraries = select_libraries(&version.libraries, &cache)?;
+        let mut libraries = select_libraries(&version.libraries, &cache)?;
+        if !loader_libraries.is_empty() {
+            let loader_modules = loader_libraries.iter().filter_map(|library| library.module.as_deref()).collect::<HashSet<_>>();
+            // Loader metadata owns dependency versions for modules it explicitly declares.
+            // Keeping both the inherited Mojang JAR and Fabric's replacement (for example
+            // asm:9.6 plus asm:9.10.1) makes Fabric Loader reject its own classpath.
+            libraries.classpath.retain(|library| !library.module.as_deref().is_some_and(|module| loader_modules.contains(module)));
+        }
         let client_path = cache.join("versions").join(safe_component(&version.id)?).join("client.jar");
         let mut downloads = Vec::new();
         downloads.push(PlannedDownload { target: client_path.clone(), source: version.downloads.client.clone() });
@@ -353,7 +360,10 @@ impl MinecraftService {
                 Some(hash) => hash,
                 None => self.fetch_sha1_sidecar(&url).await?,
             };
-            result.push(CachedLibrary { path, download: Download { url, sha1, size: library.size.unwrap_or(0), path: None, id: None } });
+            result.push(CachedLibrary {
+                path, module: maven_module(&library.name),
+                download: Download { url, sha1, size: library.size.unwrap_or(0), path: None, id: None },
+            });
         }
         Ok(result)
     }
@@ -816,6 +826,8 @@ impl JavaArchiveKind {
 #[derive(Deserialize)]
 struct Library {
     #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
     downloads: LibraryDownloads,
     #[serde(default)]
     rules: Vec<Value>,
@@ -830,7 +842,7 @@ struct LibraryDownloads {
     classifiers: HashMap<String, Download>,
 }
 
-struct CachedLibrary { path: PathBuf, download: Download }
+struct CachedLibrary { path: PathBuf, download: Download, module: Option<String> }
 struct Libraries { classpath: Vec<CachedLibrary>, natives: Vec<CachedLibrary> }
 struct PlannedDownload { target: PathBuf, source: Download }
 
@@ -1021,19 +1033,30 @@ fn select_libraries(libraries: &[Library], cache: &Path) -> Result<Libraries, St
         if !rules_apply(&library.rules) { continue; }
         if let Some(download) = &library.downloads.artifact {
             let path = library_path(cache, download)?;
-            if paths.insert(path.clone()) { classpath.push(CachedLibrary { path, download: download.clone() }); }
+            if paths.insert(path.clone()) {
+                classpath.push(CachedLibrary { path, download: download.clone(), module: library.name.as_deref().and_then(maven_module) });
+            }
         }
         if let Some(template) = library.natives.get(current_os()) {
             let classifier = template.replace("${arch}", current_arch());
             if let Some(download) = library.downloads.classifiers.get(&classifier) {
                 let path = library_path(cache, download)?;
-                if paths.insert(path.clone()) { natives.push(CachedLibrary { path, download: download.clone() }); }
+                if paths.insert(path.clone()) { natives.push(CachedLibrary { path, download: download.clone(), module: None }); }
             } else {
                 return Err("Официальные метаданные библиотеки не содержат native для этой архитектуры".into());
             }
         }
     }
     Ok(Libraries { classpath, natives })
+}
+
+fn maven_module(coordinate: &str) -> Option<String> {
+    let mut parts = coordinate.split(':');
+    let group = parts.next()?;
+    let artifact = parts.next()?;
+    let version = parts.next()?;
+    if group.is_empty() || artifact.is_empty() || version.is_empty() { return None; }
+    Some(format!("{group}:{artifact}"))
 }
 
 fn library_path(cache: &Path, download: &Download) -> Result<PathBuf, String> {
