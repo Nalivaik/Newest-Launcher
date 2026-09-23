@@ -68,8 +68,8 @@ struct ActiveGame {
 #[derive(Default)]
 struct Runtime {
     operation: Option<String>,
-    active: Option<ActiveGame>,
-    status: GameStatus,
+    active: HashMap<String, ActiveGame>,
+    statuses: HashMap<String, GameStatus>,
 }
 
 pub struct MinecraftService {
@@ -91,8 +91,11 @@ impl MinecraftService {
         })
     }
 
-    pub fn status(&self) -> Result<GameStatus, String> {
-        Ok(self.runtime.lock().map_err(|_| "Состояние Minecraft недоступно")?.status.clone())
+    pub fn status(&self, instance_id: &str) -> Result<GameStatus, String> {
+        let runtime = self.runtime.lock().map_err(|_| "Состояние Minecraft недоступно")?;
+        Ok(runtime.statuses.get(instance_id).cloned().unwrap_or_else(|| GameStatus {
+            instance_id: Some(instance_id.to_owned()), ..GameStatus::default()
+        }))
     }
 
     pub async fn install(&self, core: &LauncherCore, instance_id: String) -> Result<Snapshot, String> {
@@ -158,79 +161,99 @@ impl MinecraftService {
         }
     }
 
-    pub fn stop(&self) -> Result<GameStatus, String> {
+    pub fn stop(&self, instance_id: &str) -> Result<GameStatus, String> {
         let (child, instance_id) = {
             let mut runtime = self.runtime.lock().map_err(|_| "Состояние Minecraft недоступно")?;
-            let (child, instance_id) = runtime.active.as_ref().map(|active| (active.child.clone(), active.instance_id.clone()))
-                .ok_or_else(|| "Minecraft сейчас не запущен".to_owned())?;
-            runtime.status.phase = "stopping".into();
-            runtime.status.message = "Останавливаем Minecraft…".into();
-            runtime.status.last_error = None;
+            let active = runtime.active.get(instance_id)
+                .ok_or_else(|| "Этот экземпляр Minecraft сейчас не запущен".to_owned())?;
+            let child = active.child.clone();
+            let instance_id = active.instance_id.clone();
+            if let Some(status) = runtime.statuses.get_mut(&instance_id) {
+                status.phase = "stopping".into();
+                status.message = "Останавливаем Minecraft…".into();
+                status.last_error = None;
+            }
             (child, instance_id)
         };
         child.lock().map_err(|_| "Процесс Minecraft недоступен")?.kill()
             .map_err(|error| format!("Не удалось остановить Minecraft: {error}"))?;
-        let mut runtime = self.runtime.lock().map_err(|_| "Состояние Minecraft недоступно")?;
-        runtime.status.instance_id = Some(instance_id);
-        Ok(runtime.status.clone())
+        self.status(&instance_id)
     }
 
     fn begin(&self, instance_id: &str, phase: &str, message: &str) -> Result<(), String> {
         let mut runtime = self.runtime.lock().map_err(|_| "Состояние Minecraft недоступно")?;
-        if runtime.operation.is_some() { return Err("Уже выполняется другая операция Minecraft".into()); }
-        if runtime.active.is_some() { return Err("Minecraft уже запущен. Сначала остановите игру.".into()); }
+        if runtime.operation.is_some() { return Err("Подготовка другого экземпляра уже выполняется. Дождитесь её завершения.".into()); }
+        if runtime.active.contains_key(instance_id) { return Err("Этот экземпляр Minecraft уже запущен".into()); }
         runtime.operation = Some(instance_id.to_owned());
-        runtime.status = GameStatus {
+        runtime.statuses.insert(instance_id.to_owned(), GameStatus {
             instance_id: Some(instance_id.to_owned()), phase: phase.into(), message: message.into(),
             completed_files: 0, total_files: 0, completed_bytes: 0, total_bytes: 0, pid: None, last_error: None,
-        };
+        });
         Ok(())
     }
 
     fn complete(&self, message: &str) {
         if let Ok(mut runtime) = self.runtime.lock() {
-            runtime.operation = None;
-            runtime.status.phase = "installed".into();
-            runtime.status.message = message.into();
-            runtime.status.last_error = None;
+            if let Some(instance_id) = runtime.operation.take() {
+                if let Some(status) = runtime.statuses.get_mut(&instance_id) {
+                    status.phase = "installed".into();
+                    status.message = message.into();
+                    status.last_error = None;
+                }
+            }
         }
     }
 
     fn fail(&self, error: &str) {
         if let Ok(mut runtime) = self.runtime.lock() {
-            runtime.operation = None;
-            runtime.status.phase = "failed".into();
-            runtime.status.message = "Операция Minecraft не завершена".into();
-            runtime.status.last_error = Some(error.to_owned());
-            runtime.status.pid = None;
+            if let Some(instance_id) = runtime.operation.take() {
+                if let Some(status) = runtime.statuses.get_mut(&instance_id) {
+                    status.phase = "failed".into();
+                    status.message = "Операция Minecraft не завершена".into();
+                    status.last_error = Some(error.to_owned());
+                    status.pid = None;
+                }
+            }
         }
     }
 
     fn set_phase(&self, phase: &str, message: &str) {
         if let Ok(mut runtime) = self.runtime.lock() {
-            runtime.status.phase = phase.into();
-            runtime.status.message = message.into();
+            let operation = runtime.operation.clone();
+            if let Some(status) = operation.as_ref().and_then(|id| runtime.statuses.get_mut(id)) {
+                status.phase = phase.into();
+                status.message = message.into();
+            }
         }
     }
 
     fn set_totals(&self, files: u64, bytes: u64) {
         if let Ok(mut runtime) = self.runtime.lock() {
-            runtime.status.total_files = files;
-            runtime.status.total_bytes = bytes;
-            runtime.status.completed_files = 0;
-            runtime.status.completed_bytes = 0;
+            let operation = runtime.operation.clone();
+            if let Some(status) = operation.as_ref().and_then(|id| runtime.statuses.get_mut(id)) {
+                status.total_files = files;
+                status.total_bytes = bytes;
+                status.completed_files = 0;
+                status.completed_bytes = 0;
+            }
         }
     }
 
     fn increment_download_bytes(&self, bytes: u64) {
         if let Ok(mut runtime) = self.runtime.lock() {
-            runtime.status.completed_bytes = runtime.status.completed_bytes.saturating_add(bytes);
+            let operation = runtime.operation.clone();
+            if let Some(status) = operation.as_ref().and_then(|id| runtime.statuses.get_mut(id)) {
+                status.completed_bytes = status.completed_bytes.saturating_add(bytes);
+            }
         }
     }
 
     fn increment_completed_file(&self) {
         if let Ok(mut runtime) = self.runtime.lock() {
-            runtime.status.completed_files = runtime.status.completed_files.saturating_add(1);
+            let operation = runtime.operation.clone();
+            if let Some(status) = operation.as_ref().and_then(|id| runtime.statuses.get_mut(id)) {
+                status.completed_files = status.completed_files.saturating_add(1);
+            }
         }
     }
 
@@ -647,13 +670,16 @@ impl MinecraftService {
         {
             let mut runtime = self.runtime.lock().map_err(|_| "Состояние Minecraft недоступно")?;
             runtime.operation = None;
-            runtime.active = Some(ActiveGame { instance_id: instance_id.clone(), child: child.clone() });
-            runtime.status.phase = "running".into();
-            runtime.status.message = "Minecraft запущен".into();
-            runtime.status.pid = Some(pid);
-            runtime.status.last_error = None;
+            runtime.active.insert(instance_id.clone(), ActiveGame { instance_id: instance_id.clone(), child: child.clone() });
+            if let Some(status) = runtime.statuses.get_mut(&instance_id) {
+                status.phase = "running".into();
+                status.message = "Minecraft запущен".into();
+                status.pid = Some(pid);
+                status.last_error = None;
+            }
         }
         let runtime = self.runtime.clone();
+        let watcher_instance_id = instance_id.clone();
         thread::spawn(move || {
             let exit = loop {
                 let result = child.lock().ok().and_then(|mut child| child.try_wait().ok()).flatten();
@@ -661,23 +687,23 @@ impl MinecraftService {
                 thread::sleep(Duration::from_millis(250));
             };
             let elapsed = started.elapsed().as_secs();
-            let _ = core.record_game_exit(&instance_id, elapsed);
+            let _ = core.record_game_exit(&watcher_instance_id, elapsed);
             let code = exit.code();
             let failed = !exit.success();
             let error = failed.then(|| format!("Minecraft завершился с ошибкой (код {:?}). Подробности: {}", code, log_path.display()));
             let _ = append_game_log(&log_path, &format!("[Newest Launcher] Minecraft exited with code {:?} after {}s", code, elapsed));
             if let Ok(mut current) = runtime.lock() {
-                if current.active.as_ref().is_some_and(|active| active.instance_id == instance_id) {
-                    current.active = None;
-                    current.status = GameStatus {
-                        instance_id: Some(instance_id), phase: if failed { "failed".into() } else { "idle".into() },
+                if current.active.get(&watcher_instance_id).is_some_and(|active| active.instance_id == watcher_instance_id) {
+                    current.active.remove(&watcher_instance_id);
+                    current.statuses.insert(watcher_instance_id.clone(), GameStatus {
+                        instance_id: Some(watcher_instance_id), phase: if failed { "failed".into() } else { "idle".into() },
                         message: if failed { "Minecraft завершился с ошибкой".into() } else { format!("Minecraft завершился (код {:?})", code) },
                         completed_files: 0, total_files: 0, completed_bytes: 0, total_bytes: 0, pid: None, last_error: error,
-                    };
+                    });
                 }
             }
         });
-        self.status()
+        self.status(&instance_id)
     }
 }
 

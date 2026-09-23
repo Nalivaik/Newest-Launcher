@@ -91,13 +91,13 @@ pub async fn launch_minecraft(
 }
 
 #[tauri::command]
-pub fn stop_minecraft(minecraft: State<'_, MinecraftService>) -> Result<GameStatus, String> {
-    minecraft.stop()
+pub fn stop_minecraft(minecraft: State<'_, MinecraftService>, id: String) -> Result<GameStatus, String> {
+    minecraft.stop(&id)
 }
 
 #[tauri::command]
-pub fn minecraft_status(minecraft: State<'_, MinecraftService>) -> Result<GameStatus, String> {
-    minecraft.status()
+pub fn minecraft_status(minecraft: State<'_, MinecraftService>, id: String) -> Result<GameStatus, String> {
+    minecraft.status(&id)
 }
 
 #[tauri::command]

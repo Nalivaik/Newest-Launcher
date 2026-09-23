@@ -19,8 +19,8 @@ export async function launchMinecraft(instance: Instance): Promise<GameStatus> {
   return status;
 }
 
-export async function stopMinecraft(): Promise<GameStatus> {
-  const status = await bridge.stopMinecraft();
+export async function stopMinecraft(instanceId: string): Promise<GameStatus> {
+  const status = await bridge.stopMinecraft(instanceId);
   notify(status.message);
   return status;
 }

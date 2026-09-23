@@ -38,7 +38,8 @@ export function homePage(navigate: (route: Route) => void): HTMLElement {
   const launchNote = page.querySelector<HTMLElement>('#launchNote')!;
   const playText = play.querySelector<HTMLElement>('[data-text]')!;
   const stop = button(t('stop'), async () => {
-    const status = await stopMinecraft();
+    if (!instance) return;
+    const status = await stopMinecraft(instance.id);
     renderStatus(status);
   }, 'soft-button');
   stop.hidden = true;
@@ -93,7 +94,8 @@ export function homePage(navigate: (route: Route) => void): HTMLElement {
   page.querySelector('.play-controls')!.append(stop);
   if (bridge.isDesktop) {
     const refreshStatus = (): void => {
-      void bridge.minecraftStatus().then(status => {
+      if (!instance) return;
+      void bridge.minecraftStatus(instance.id).then(status => {
         if (page.isConnected) renderStatus(status);
       }).catch(() => undefined).finally(() => {
         if (page.isConnected) window.setTimeout(refreshStatus, 1500);

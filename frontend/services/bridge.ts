@@ -26,8 +26,8 @@ export const bridge = {
   installModrinthContent: (id: string, projectId: string, contentType: Extract<ProjectType, 'mod' | 'resourcepack' | 'shader'>): Promise<Snapshot> =>
     command('install_modrinth_content', { id, projectId, contentType }),
   launchMinecraft: (id: string): Promise<GameStatus> => command('launch_minecraft', { id }),
-  stopMinecraft: (): Promise<GameStatus> => command('stop_minecraft'),
-  minecraftStatus: (): Promise<GameStatus> => command('minecraft_status'),
+  stopMinecraft: (id: string): Promise<GameStatus> => command('stop_minecraft', { id }),
+  minecraftStatus: (id: string): Promise<GameStatus> => command('minecraft_status', { id }),
   saveSettings: (settings: Settings): Promise<Snapshot> => command('save_settings', { settings }),
   importInstance: (): Promise<Snapshot | null> => command('import_instance'),
   exportInstance: (id: string): Promise<boolean> => command('export_instance', { id }),
