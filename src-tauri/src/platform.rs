@@ -7,6 +7,26 @@
 
 use std::path::{Path, PathBuf};
 
+/// Replaces a downloaded file while keeping both temporary and backup paths beside the
+/// destination. This keeps renames on the destination volume and works when Windows refuses
+/// to rename a new file over an existing (corrupt) cache entry.
+pub(crate) async fn replace_download(temp: &Path, target: &Path) -> std::io::Result<()> {
+    let backup = target.with_extension(format!("backup-{}", uuid::Uuid::new_v4()));
+    let had_target = match tokio::fs::symlink_metadata(target).await {
+        Ok(metadata) if metadata.file_type().is_file() => true,
+        Ok(_) => return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "download target is not a regular file")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(error),
+    };
+    if had_target { tokio::fs::rename(target, &backup).await?; }
+    if let Err(error) = tokio::fs::rename(temp, target).await {
+        if had_target { let _ = tokio::fs::rename(&backup, target).await; }
+        return Err(error);
+    }
+    if had_target { let _ = tokio::fs::remove_file(backup).await; }
+    Ok(())
+}
+
 pub(crate) fn command_path(path: &Path) -> PathBuf {
     PathBuf::from(command_path_string(path))
 }

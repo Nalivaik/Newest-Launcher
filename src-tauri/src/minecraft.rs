@@ -6,7 +6,7 @@
 
 use crate::loaders::{self, InstallerRequest};
 use crate::microsoft_auth::{MicrosoftAuth, MICROSOFT_CLIENT_ID};
-use crate::platform::{command_path, command_path_string};
+use crate::platform::{command_path, command_path_string, replace_download};
 use futures_util::stream::{self, StreamExt};
 use newest_launcher_core::{Instance, LauncherCore, Profile, Snapshot};
 use flate2::read::GzDecoder;
@@ -448,7 +448,7 @@ impl MinecraftService {
             let _ = tokio::fs::remove_file(&temporary).await;
             return Err("Контрольная сумма скачанного файла Minecraft не совпала".into());
         }
-        tokio::fs::rename(&temporary, target).await.map_err(io_error)?;
+        replace_download(&temporary, target).await.map_err(io_error)?;
         Ok(received)
     }
 
@@ -620,7 +620,7 @@ impl MinecraftService {
             let _ = tokio::fs::remove_file(&temporary).await;
             return Err("Контрольная сумма скачанной Java не совпала".into());
         }
-        tokio::fs::rename(&temporary, target).await.map_err(io_error)?;
+        replace_download(&temporary, target).await.map_err(io_error)?;
         Ok(())
     }
 

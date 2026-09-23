@@ -5,7 +5,7 @@
 //! runtime prepares an isolated target directory; this module downloads, runs, and verifies
 //! the official installer result inside that directory.
 
-use crate::platform::{command_path, command_path_string};
+use crate::platform::{command_path, command_path_string, replace_download};
 use reqwest::Client;
 use serde_json::Value;
 use sha1::{Digest, Sha1};
@@ -269,7 +269,7 @@ async fn download_installer(client: &Client, url: &str, target: &Path) -> Result
             return Err("Контрольная сумма официального installer не совпала".into());
         }
     }
-    tokio::fs::rename(&temporary, target).await.map_err(io_error)?;
+    replace_download(&temporary, target).await.map_err(io_error)?;
     Ok(())
 }
 
