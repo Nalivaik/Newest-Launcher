@@ -7,6 +7,7 @@
 use crate::loaders::{self, InstallerRequest};
 use crate::microsoft_auth::{MicrosoftAuth, MICROSOFT_CLIENT_ID};
 use crate::platform::{command_path, command_path_string};
+use futures_util::stream::{self, StreamExt};
 use newest_launcher_core::{Instance, LauncherCore, Profile, Snapshot};
 use flate2::read::GzDecoder;
 use reqwest::redirect::Policy;
@@ -82,7 +83,8 @@ impl MinecraftService {
             client: reqwest::Client::builder()
                 .user_agent(concat!("NewestLauncher/", env!("CARGO_PKG_VERSION"), " (desktop; Minecraft installer)"))
                 .connect_timeout(Duration::from_secs(10))
-                .timeout(Duration::from_secs(90))
+                // Large assets on slow Windows connections need time while bytes continue arriving.
+                .timeout(Duration::from_secs(15 * 60))
                 .redirect(Policy::none())
                 .build()?,
             runtime: Arc::new(Mutex::new(Runtime::default())),
@@ -215,13 +217,20 @@ impl MinecraftService {
         if let Ok(mut runtime) = self.runtime.lock() {
             runtime.status.total_files = files;
             runtime.status.total_bytes = bytes;
+            runtime.status.completed_files = 0;
+            runtime.status.completed_bytes = 0;
         }
     }
 
-    fn increment_progress(&self, bytes: u64) {
+    fn increment_download_bytes(&self, bytes: u64) {
+        if let Ok(mut runtime) = self.runtime.lock() {
+            runtime.status.completed_bytes = runtime.status.completed_bytes.saturating_add(bytes);
+        }
+    }
+
+    fn increment_completed_file(&self) {
         if let Ok(mut runtime) = self.runtime.lock() {
             runtime.status.completed_files = runtime.status.completed_files.saturating_add(1);
-            runtime.status.completed_bytes = runtime.status.completed_bytes.saturating_add(bytes);
         }
     }
 
@@ -248,7 +257,7 @@ impl MinecraftService {
         let entry = manifest.versions.into_iter().find(|entry| entry.id == instance.minecraft_version)
             .ok_or_else(|| format!("Версия Minecraft {} отсутствует в официальном manifest", instance.minecraft_version))?;
         let version_path = cache.join("versions").join(safe_component(&entry.id)?).join("version.json");
-        self.download_verified(&entry.url, &version_path, &entry.sha1, None).await?;
+        self.download_verified(&entry.url, &version_path, &entry.sha1, None, false).await?;
         let mut version: VersionMeta = read_json(&version_path).await?;
         if version.id != instance.minecraft_version { return Err("Официальный version JSON не соответствует выбранной версии".into()); }
         if version.inherits_from.is_some() { return Err("Эта версия требует наследуемый version JSON, который ещё не поддержан установщиком Vanilla".into()); }
@@ -256,7 +265,7 @@ impl MinecraftService {
             self.resolve_lightweight_loader(&instance, &mut version, &cache).await?
         } else { vec![] };
         let asset_index_path = cache.join("assets").join("indexes").join(format!("{}.json", safe_component(&version.asset_index.id)?));
-        self.download_verified(&version.asset_index.url, &asset_index_path, &version.asset_index.sha1, Some(version.asset_index.size)).await?;
+        self.download_verified(&version.asset_index.url, &asset_index_path, &version.asset_index.sha1, Some(version.asset_index.size), false).await?;
         let asset_index: AssetIndex = read_json(&asset_index_path).await?;
         if asset_index.objects.len() > MAX_ASSETS { return Err("Asset index содержит слишком много файлов".into()); }
         let libraries = select_libraries(&version.libraries, &cache)?;
@@ -284,15 +293,26 @@ impl MinecraftService {
                 source: Download { url: format!("https://resources.download.minecraft.net/{prefix}/{}", asset.hash), sha1: asset.hash.clone(), size: asset.size, path: None, id: None },
             });
         }
+        let mut unique_targets = HashSet::new();
+        downloads.retain(|item| unique_targets.insert(item.target.clone()));
         let total_files = downloads.len() as u64;
         let total_bytes = downloads.iter().fold(0_u64, |total, item| total.saturating_add(item.source.size));
-        self.set_phase("installing", "Скачиваем и проверяем файлы Minecraft");
+        self.set_phase("installing", "Проверяем кэш и скачиваем файлы Minecraft");
         self.set_totals(total_files, total_bytes);
-        for item in downloads {
+        let concurrency = core.snapshot().map_err(core_error)?.settings.concurrent_downloads.clamp(1, 16) as usize;
+        let mut pending = stream::iter(downloads.into_iter().map(|item| async move {
             let expected_size = (item.source.size != 0).then_some(item.source.size);
-            let size = self.download_verified(&item.source.url, &item.target, &item.source.sha1, expected_size).await?;
-            self.increment_progress(size);
+            self.download_verified(&item.source.url, &item.target, &item.source.sha1, expected_size, true).await?;
+            self.increment_completed_file();
+            Ok::<(), String>(())
+        })).buffer_unordered(concurrency);
+        let mut first_error = None;
+        while let Some(result) = pending.next().await {
+            if let Err(error) = result {
+                if first_error.is_none() { first_error = Some(error); }
+            }
         }
+        if let Some(error) = first_error { return Err(error); }
         let native_directory = PathBuf::from(&instance.game_directory).join(".newest").join("natives").join(safe_component(&version.id)?);
         extract_natives(libraries.natives.iter().map(|item| item.path.clone()).collect(), native_directory.clone()).await?;
         let assets_root = cache.join("assets");
@@ -374,14 +394,19 @@ impl MinecraftService {
         serde_json::from_slice(&body).map_err(|_| "Minecraft API вернул некорректный JSON".into())
     }
 
-    async fn download_verified(&self, url: &str, target: &Path, sha1: &str, expected_size: Option<u64>) -> Result<u64, String> {
+    async fn download_verified(&self, url: &str, target: &Path, sha1: &str, expected_size: Option<u64>, track_progress: bool) -> Result<u64, String> {
         validate_download_url(url)?;
         validate_sha1(sha1)?;
         if let Some(size) = expected_size {
             if size > MAX_DOWNLOAD_BYTES { return Err("Файл Minecraft превышает безопасный лимит размера".into()); }
-            if target.exists() && verify_file(target, sha1, Some(size)).await? { return Ok(size); }
+            if target.exists() && verify_file(target, sha1, Some(size)).await? {
+                if track_progress { self.increment_download_bytes(size); }
+                return Ok(size);
+            }
         } else if target.exists() && verify_file(target, sha1, None).await? {
-            return Ok(fs::metadata(target).map_err(io_error)?.len());
+            let size = fs::metadata(target).map_err(io_error)?.len();
+            if track_progress { self.increment_download_bytes(size); }
+            return Ok(size);
         }
         ensure_parent(target)?;
         reject_symlink(target)?;
@@ -395,6 +420,8 @@ impl MinecraftService {
         let mut file = tokio::fs::File::create(&temporary).await.map_err(io_error)?;
         let mut hash = Sha1::new();
         let mut received = 0_u64;
+        let mut unreported_progress = 0_u64;
+        let mut last_progress_report = Instant::now();
         while let Some(chunk) = response.chunk().await.map_err(network_error)? {
             received = received.checked_add(chunk.len() as u64).ok_or_else(|| "Размер файла Minecraft переполнен".to_owned())?;
             if received > expected_size.unwrap_or(MAX_DOWNLOAD_BYTES) || received > MAX_DOWNLOAD_BYTES {
@@ -403,7 +430,16 @@ impl MinecraftService {
             }
             hash.update(&chunk);
             file.write_all(&chunk).await.map_err(io_error)?;
+            if track_progress {
+                unreported_progress = unreported_progress.saturating_add(chunk.len() as u64);
+                if unreported_progress >= 256 * 1024 || last_progress_report.elapsed() >= Duration::from_millis(200) {
+                    self.increment_download_bytes(unreported_progress);
+                    unreported_progress = 0;
+                    last_progress_report = Instant::now();
+                }
+            }
         }
+        if track_progress && unreported_progress > 0 { self.increment_download_bytes(unreported_progress); }
         file.flush().await.map_err(io_error)?;
         file.sync_all().await.map_err(io_error)?;
         drop(file);

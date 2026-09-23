@@ -13,6 +13,11 @@ function installationLabel(instance: Instance): string {
   return t('notInstalled');
 }
 
+function formatBytes(bytes: number): string {
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 export function homePage(navigate: (route: Route) => void): HTMLElement {
   const template = document.querySelector<HTMLTemplateElement>('#home-template')!;
   const page = el('section', 'home-page');
@@ -55,7 +60,9 @@ export function homePage(navigate: (route: Route) => void): HTMLElement {
       launchNote.textContent = status.lastError ?? status.message;
       return;
     }
-    launchNote.textContent = status.lastError ?? status.message;
+    launchNote.textContent = status.lastError ?? (status.phase === 'installing' && status.totalBytes > 0
+      ? `${status.message} · ${status.completedFiles}/${status.totalFiles} · ${formatBytes(status.completedBytes)} / ${formatBytes(status.totalBytes)}`
+      : status.message);
     if (status.phase === 'running') {
       play.hidden = true;
       stop.hidden = false;
